@@ -5,8 +5,10 @@ import argparse
 import csv
 import json
 import math
+import socket
 import statistics
 import sys
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -54,7 +56,7 @@ def _normalize_yahoo_symbol(symbol: str) -> list[str]:
     return [normalized.upper()]
 
 
-def fetch_yahoo_prices(symbol: str, limit: int = 180) -> list[PriceBar]:
+def fetch_yahoo_prices(symbol: str, limit: int = 180, timeout: float = 10.0) -> list[PriceBar]:
     candidates = _normalize_yahoo_symbol(symbol)
     if not candidates:
         raise ValueError("股票代码不能为空")
@@ -78,7 +80,7 @@ def fetch_yahoo_prices(symbol: str, limit: int = 180) -> list[PriceBar]:
         )
 
         try:
-            with urllib.request.urlopen(request, timeout=10) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except (urllib.error.URLError, json.JSONDecodeError) as exc:
             last_error = exc
@@ -119,7 +121,7 @@ def fetch_yahoo_prices(symbol: str, limit: int = 180) -> list[PriceBar]:
     raise RuntimeError("无法获取在线行情")
 
 
-def fetch_stooq_prices(symbol: str, limit: int = 180) -> list[PriceBar]:
+def fetch_stooq_prices(symbol: str, limit: int = 180, timeout: float = 10.0) -> list[PriceBar]:
     normalized = symbol.strip().lower()
     if not normalized:
         raise ValueError("股票代码不能为空")
@@ -135,15 +137,17 @@ def fetch_stooq_prices(symbol: str, limit: int = 180) -> list[PriceBar]:
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
-    except urllib.error.URLError:
-        return fetch_yahoo_prices(symbol, limit)
+    except KeyboardInterrupt:
+        raise
+    except (urllib.error.URLError, TimeoutError, socket.timeout, ssl.SSLError):
+        return fetch_yahoo_prices(symbol, limit, timeout=timeout)
 
     rows = list(csv.DictReader(raw.splitlines()))
     prices = _parse_price_rows(rows)
     if not prices:
-        return fetch_yahoo_prices(symbol, limit)
+        return fetch_yahoo_prices(symbol, limit, timeout=timeout)
 
     return prices[-limit:]
 
@@ -399,11 +403,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--source",
-        choices=("stooq", "demo"),
-        default="stooq",
-        help="行情来源，默认 stooq；若离线可切换为 demo",
+        choices=("auto", "stooq", "yahoo", "demo"),
+        default="auto",
+        help="行情来源：auto(默认，优先 stooq 失败回退 yahoo)、stooq、yahoo、demo",
     )
     parser.add_argument("--limit", type=int, default=180, help="拉取或生成的数据条数，默认 180")
+    parser.add_argument("--timeout", type=float, default=10.0, help="在线请求超时时间(秒)，默认 10")
     parser.add_argument(
         "--self-test",
         action="store_true",
@@ -427,6 +432,10 @@ def main() -> int:
         print("错误: --limit 必须大于 0", file=sys.stderr)
         return 1
 
+    if args.timeout <= 0:
+        print("错误: --timeout 必须大于 0", file=sys.stderr)
+        return 1
+
     if args.source != "demo" and not args.symbol:
         print("错误: 在线模式必须提供股票代码", file=sys.stderr)
         return 1
@@ -435,8 +444,12 @@ def main() -> int:
         if args.source == "demo":
             prices = generate_demo_prices(args.limit)
             symbol = args.symbol or "demo"
+        elif args.source == "yahoo":
+            prices = fetch_yahoo_prices(args.symbol, args.limit, timeout=args.timeout)
+            symbol = args.symbol
         else:
-            prices = fetch_stooq_prices(args.symbol, args.limit)
+            # auto / stooq 都走 stooq，失败会在函数内部回退到 yahoo
+            prices = fetch_stooq_prices(args.symbol, args.limit, timeout=args.timeout)
             symbol = args.symbol
     except Exception as exc:
         print(f"错误: {exc}", file=sys.stderr)

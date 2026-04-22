@@ -213,6 +213,12 @@ class TestCLI(unittest.TestCase):
         self.assertIn("--limit 必须大于 0", err)
         self.assertEqual(out, "")
 
+    def test_main_timeout_invalid_branch(self):
+        rc, out, err = _run_main(["stock_analyzer.py", "aapl.us", "--timeout", "0"])
+        self.assertEqual(rc, 1)
+        self.assertIn("--timeout 必须大于 0", err)
+        self.assertEqual(out, "")
+
     def test_main_missing_symbol_branch(self):
         rc, out, err = _run_main(["stock_analyzer.py"])
         self.assertEqual(rc, 1)
@@ -232,6 +238,15 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("股票代码: aapl.us", out)
         self.assertEqual(err, "")
+
+    def test_main_yahoo_source_branch(self):
+        sentinel = stock_analyzer.generate_demo_prices(50)
+        with mock.patch.object(stock_analyzer, "fetch_yahoo_prices", return_value=sentinel) as fy:
+            rc, out, err = _run_main(["stock_analyzer.py", "aapl.us", "--source", "yahoo", "--limit", "50"])
+        self.assertEqual(rc, 0)
+        self.assertIn("股票代码: aapl.us", out)
+        self.assertEqual(err, "")
+        fy.assert_called()
 
     def test_main_online_fetch_exception_branch(self):
         with mock.patch.object(stock_analyzer, "fetch_stooq_prices", side_effect=RuntimeError("boom")):
