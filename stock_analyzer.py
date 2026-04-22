@@ -5,6 +5,8 @@ import argparse
 import csv
 import json
 import math
+import os
+import re
 import socket
 import statistics
 import sys
@@ -54,6 +56,177 @@ def _normalize_yahoo_symbol(symbol: str) -> list[str]:
     if suffix == "cn":
         return [f"{base}.SS", f"{base}.SZ", base.upper()]
     return [normalized.upper()]
+
+
+def _load_symbol_aliases() -> dict[str, str]:
+    # Optional local mapping file for Chinese names / aliases -> symbols.
+    path = os.path.join(os.path.dirname(__file__), "symbols.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    if isinstance(data, dict):
+        return {str(k).strip(): str(v).strip() for k, v in data.items() if str(k).strip() and str(v).strip()}
+    return {}
+
+
+def _yahoo_search_best_symbol(query: str, timeout: float = 10.0) -> str | None:
+    q = (query or "").strip()
+    if not q:
+        return None
+
+    params = urllib.parse.urlencode(
+        {
+            "q": q,
+            "quotesCount": 10,
+            "newsCount": 0,
+            "enableFuzzyQuery": "true",
+        }
+    )
+    url = f"https://query2.finance.yahoo.com/v1/finance/search?{params}"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (compatible; StockAnalyzer/1.0; +https://example.local)"
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError, socket.timeout, ssl.SSLError):
+        return None
+
+    quotes = payload.get("quotes") or []
+    if not isinstance(quotes, list):
+        return None
+
+    preferred_types = {"EQUITY", "ETF", "MUTUALFUND", "INDEX"}
+    for quote in quotes:
+        if not isinstance(quote, dict):
+            continue
+        symbol = quote.get("symbol")
+        quote_type = quote.get("quoteType")
+        if isinstance(symbol, str) and symbol.strip() and quote_type in preferred_types:
+            return symbol.strip()
+
+    for quote in quotes:
+        if not isinstance(quote, dict):
+            continue
+        symbol = quote.get("symbol")
+        if isinstance(symbol, str) and symbol.strip():
+            return symbol.strip()
+
+    return None
+
+
+def _eastmoney_suggest_best_symbol(query: str, timeout: float = 10.0) -> str | None:
+    q = (query or "").strip()
+    if not q:
+        return None
+
+    params = urllib.parse.urlencode({"input": q, "type": 14, "count": 5})
+    url = f"https://searchapi.eastmoney.com/api/suggest/get?{params}"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (compatible; StockAnalyzer/1.0; +https://example.local)"
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError, socket.timeout, ssl.SSLError):
+        return None
+
+    table = payload.get("QuotationCodeTable") or {}
+    data = table.get("Data") or []
+    if not isinstance(data, list) or not data:
+        return None
+
+    first = data[0]
+    if not isinstance(first, dict):
+        return None
+
+    quote_id = first.get("QuoteID")
+    code = first.get("Code")
+    if isinstance(quote_id, str) and "." in quote_id:
+        _market, code_from_id = quote_id.split(".", 1)
+        if not code and code_from_id:
+            code = code_from_id
+
+    if not isinstance(code, str) or not code.strip():
+        return None
+    code = code.strip()
+
+    if re.fullmatch(r"\d{6}", code):
+        return f"{code}.cn"
+    if re.fullmatch(r"\d{4,5}", code):
+        return f"{code.zfill(4)}.hk"
+
+    return None
+
+
+def _is_yahoo_only_symbol(symbol: str) -> bool:
+    lower = (symbol or "").strip().lower()
+    if not lower:
+        return False
+    if re.fullmatch(r"[a-z0-9]+\.(cn|hk|us)", lower):
+        return False
+    return True
+
+
+def resolve_symbol(query: str, timeout: float = 10.0) -> tuple[str | None, bool, list[str]]:
+    """
+    Convert user input (Chinese name / alias / raw code) into a normalized symbol.
+    Returns: (symbol_or_none, force_yahoo, suggestions)
+    """
+    raw = (query or "").strip()
+    if not raw:
+        return None, False, []
+
+    lower = raw.lower()
+
+    # Already looks like stooq-style symbol: 600519.cn / aapl.us / 0700.hk
+    if re.fullmatch(r"[a-z0-9]+\.(cn|hk|us)", lower):
+        return lower, False, []
+
+    # Digits-only convenience: A-share 6 digits, HK 4-5 digits
+    if re.fullmatch(r"\d{6}", raw):
+        return f"{raw}.cn", False, []
+    if re.fullmatch(r"\d{4,5}", raw):
+        return f"{raw.zfill(4)}.hk", False, []
+
+    # US ticker convenience: AAPL -> aapl.us
+    if re.fullmatch(r"[A-Za-z]{1,10}", raw):
+        return f"{raw.lower()}.us", False, []
+
+    aliases = _load_symbol_aliases()
+    if raw in aliases:
+        return aliases[raw].strip().lower(), False, []
+
+    # Fuzzy suggestions (substring match) for Chinese input
+    suggestions: list[str] = []
+    if any("\u4e00" <= ch <= "\u9fff" for ch in raw):
+        for name, symbol in aliases.items():
+            if raw in name:
+                suggestions.append(f"{name} -> {symbol}")
+        suggestions = suggestions[:8]
+
+        # Online fallback 1 (CN-friendly): Eastmoney suggest -> stooq-style code.
+        em_symbol = _eastmoney_suggest_best_symbol(raw, timeout=timeout)
+        if em_symbol:
+            # Prefer Yahoo path to avoid stooq captcha/handshake issues.
+            return em_symbol, True, []
+
+    yahoo_symbol = _yahoo_search_best_symbol(raw, timeout=timeout)
+    if yahoo_symbol:
+        return yahoo_symbol, True, []
+
+    return None, False, suggestions
 
 
 def fetch_yahoo_prices(symbol: str, limit: int = 180, timeout: float = 10.0) -> list[PriceBar]:
@@ -399,7 +572,7 @@ def parse_args() -> argparse.Namespace:
         "symbol",
         nargs="?",
         default=None,
-        help="股票代码，例如 aapl.us、msft.us、0700.hk；demo 模式可省略",
+        help="股票代码或中文名称，例如 aapl.us、0700.hk、600519.cn、贵州茅台；demo 模式可省略",
     )
     parser.add_argument(
         "--source",
@@ -436,21 +609,48 @@ def main() -> int:
         print("错误: --timeout 必须大于 0", file=sys.stderr)
         return 1
 
-    if args.source != "demo" and not args.symbol:
-        print("错误: 在线模式必须提供股票代码", file=sys.stderr)
-        return 1
+    query = args.symbol
+    if args.source != "demo" and not query:
+        if sys.stdin.isatty():
+            try:
+                query = input("请输入股票代码或名称(回车=demo): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("", file=sys.stderr)
+                return 1
+            if not query:
+                args.source = "demo"
+        else:
+            print("错误: 在线模式必须提供股票代码", file=sys.stderr)
+            return 1
 
     try:
         if args.source == "demo":
             prices = generate_demo_prices(args.limit)
-            symbol = args.symbol or "demo"
+            symbol = query or "demo"
         elif args.source == "yahoo":
-            prices = fetch_yahoo_prices(args.symbol, args.limit, timeout=args.timeout)
-            symbol = args.symbol
+            resolved, _force_yahoo, suggestions = resolve_symbol(query or "", timeout=args.timeout)
+            if not resolved:
+                if suggestions:
+                    raise RuntimeError("未识别的股票名称/代码，可选: " + "; ".join(suggestions))
+                raise RuntimeError("未识别的股票名称/代码")
+            prices = fetch_yahoo_prices(resolved, args.limit, timeout=args.timeout)
+            symbol = resolved
         else:
             # auto / stooq 都走 stooq，失败会在函数内部回退到 yahoo
-            prices = fetch_stooq_prices(args.symbol, args.limit, timeout=args.timeout)
-            symbol = args.symbol
+            resolved, force_yahoo, suggestions = resolve_symbol(query or "", timeout=args.timeout)
+            if not resolved:
+                if suggestions:
+                    raise RuntimeError("未识别的股票名称/代码，可选: " + "; ".join(suggestions))
+                raise RuntimeError("未识别的股票名称/代码")
+            if args.source == "stooq" and (force_yahoo or _is_yahoo_only_symbol(resolved)):
+                raise RuntimeError("该输入无法映射到 stooq 代码，请使用 --source yahoo")
+
+            if force_yahoo or _is_yahoo_only_symbol(resolved):
+                prices = fetch_yahoo_prices(resolved, args.limit, timeout=args.timeout)
+                symbol = resolved
+            else:
+                prices = fetch_stooq_prices(resolved, args.limit, timeout=args.timeout)
+                symbol = resolved
     except Exception as exc:
         print(f"错误: {exc}", file=sys.stderr)
         return 1

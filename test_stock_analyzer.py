@@ -53,6 +53,17 @@ class TestHelpers(unittest.TestCase):
         )
         self.assertEqual(stock_analyzer._normalize_yahoo_symbol("foo.bar"), ["FOO.BAR"])
 
+    def test_resolve_symbol_positive_and_negative(self):
+        self.assertEqual(stock_analyzer.resolve_symbol("601318.cn")[0], "601318.cn")
+        self.assertEqual(stock_analyzer.resolve_symbol("601318")[0], "601318.cn")
+        self.assertEqual(stock_analyzer.resolve_symbol("0700")[0], "0700.hk")
+        self.assertEqual(stock_analyzer.resolve_symbol("AAPL")[0], "aapl.us")
+
+        sym, force_yahoo, suggestions = stock_analyzer.resolve_symbol("不存在的公司名")
+        self.assertIsNone(sym)
+        self.assertFalse(force_yahoo)
+        self.assertIsInstance(suggestions, list)
+
 
 class TestIndicators(unittest.TestCase):
     def test_moving_average_none_then_value(self):
@@ -198,6 +209,43 @@ class TestFetchOnline(unittest.TestCase):
             with mock.patch.object(stock_analyzer.urllib.request, "urlopen", side_effect=stock_analyzer.urllib.error.URLError("x")):
                 with self.assertRaises(RuntimeError):
                     stock_analyzer.fetch_yahoo_prices("x", 10)
+
+    def test_resolve_symbol_online_yahoo_search_fallback(self):
+        payload = {
+            "quotes": [
+                {"symbol": "601318.SS", "quoteType": "EQUITY"},
+            ]
+        }
+        with mock.patch.object(
+            stock_analyzer.urllib.request,
+            "urlopen",
+            return_value=_FakeHTTPResponse(json.dumps(payload)),
+        ):
+            sym, force_yahoo, suggestions = stock_analyzer.resolve_symbol("中国平安的某种别称", timeout=1)
+        self.assertEqual(sym, "601318.SS")
+        self.assertTrue(force_yahoo)
+        self.assertEqual(suggestions, [])
+
+    def test_resolve_symbol_online_eastmoney_fallback(self):
+        payload = {
+            "QuotationCodeTable": {
+                "Data": [
+                    {"QuoteID": "0.300308", "Code": "300308"},
+                ]
+            }
+        }
+
+        def _urlopen_side_effect(request, timeout=10):
+            url = getattr(request, "full_url", "")
+            if "searchapi.eastmoney.com" in url:
+                return _FakeHTTPResponse(json.dumps(payload))
+            return _FakeHTTPResponse(json.dumps({"quotes": []}))
+
+        with mock.patch.object(stock_analyzer.urllib.request, "urlopen", side_effect=_urlopen_side_effect):
+            sym, force_yahoo, suggestions = stock_analyzer.resolve_symbol("中际旭创", timeout=1)
+        self.assertEqual(sym, "300308.cn")
+        self.assertTrue(force_yahoo)
+        self.assertEqual(suggestions, [])
 
 
 class TestCLI(unittest.TestCase):
