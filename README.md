@@ -27,6 +27,12 @@ python3 stock_analyzer.py --source demo
 
 在线模式默认优先尝试 `stooq`。如果 `stooq` 返回空数据、验证码页或不可用，程序会自动回退到 Yahoo Finance 的公开行情接口继续获取数据。
 
+如果你想先确认本地环境是否正常，可以运行内置自检：
+
+```bash
+python3 stock_analyzer.py --self-test
+```
+
 ## 示例输出
 
 ```text
@@ -52,5 +58,6 @@ python3 stock_analyzer.py --source demo
 
 - 默认数据源为 `stooq`，但在线抓取失败时会自动回退到 Yahoo Finance
 - `demo` 模式下股票代码参数可以省略
+- `--self-test` 会检查核心指标计算和示例输出
 - 分析结论基于技术指标规则打分
 - 输出仅供研究和学习，不构成投资建议
