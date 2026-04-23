@@ -17,6 +17,15 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+try:
+    import matplotlib
+    matplotlib.use('Agg')  # 非交互式后端
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
+
 
 @dataclass
 class PriceBar:
@@ -587,7 +596,82 @@ def format_num(value: float | None) -> str:
     return f"{value:.2f}"
 
 
-def analyze_prices(symbol: str, prices: list[PriceBar]) -> str:
+def generate_price_chart(symbol: str, prices: list[PriceBar], output_dir: str = ".") -> str | None:
+    """
+    生成股票价格图表，包含价格走势和技术指标
+    返回图表文件路径，如果无法生成则返回None
+    """
+    if not HAS_MATPLOTLIB or not prices:
+        return None
+
+    try:
+        # 准备数据
+        dates = [item.date for item in prices]
+        closes = [item.close for item in prices]
+
+        # 计算技术指标
+        sma20 = []
+        sma60 = []
+        for i in range(len(closes)):
+            sma20.append(moving_average(closes[:i+1], 20))
+            sma60.append(moving_average(closes[:i+1], 60))
+
+        # 创建图表
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), height_ratios=[3, 1])
+
+        # 主图：价格和均线
+        ax1.plot(dates, closes, label='收盘价', color='blue', linewidth=1.5)
+        if sma20[-1] is not None:
+            ax1.plot(dates, sma20, label='SMA20', color='orange', linestyle='--')
+        if sma60[-1] is not None:
+            ax1.plot(dates, sma60, label='SMA60', color='red', linestyle='--')
+
+        # 布林带
+        boll = bollinger_bands(closes, 20, 2.0)
+        if boll:
+            lower, mid, upper = boll
+            ax1.fill_between(dates, lower, upper, alpha=0.1, color='gray', label='布林带')
+
+        ax1.set_title(f'{symbol} 股票价格走势', fontsize=14, fontweight='bold')
+        ax1.set_ylabel('价格')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+
+        # 副图：RSI
+        rsi_values = []
+        for i in range(len(closes)):
+            rsi = compute_rsi(closes[:i+1], 14)
+            rsi_values.append(rsi)
+
+        ax2.plot(dates, rsi_values, label='RSI14', color='purple')
+        ax2.axhline(y=70, color='red', linestyle='--', alpha=0.7, label='超买线')
+        ax2.axhline(y=30, color='green', linestyle='--', alpha=0.7, label='超卖线')
+        ax2.set_ylabel('RSI')
+        ax2.set_ylim(0, 100)
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+
+        # 格式化日期
+        ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
+        plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
+
+        # 调整布局
+        plt.tight_layout()
+
+        # 保存图表
+        chart_file = os.path.join(output_dir, f"{symbol.replace('.', '_')}_chart.png")
+        plt.savefig(chart_file, dpi=150, bbox_inches='tight')
+        plt.close()
+
+        return chart_file
+
+    except Exception:
+        return None
+
+
+def analyze_prices(symbol: str, prices: list[PriceBar], generate_chart: bool = False) -> str:
     if not prices:
         raise ValueError("没有可分析的价格数据")
 
@@ -610,11 +694,23 @@ def analyze_prices(symbol: str, prices: list[PriceBar]) -> str:
     slope60 = linear_regression_slope(closes, 60)
     stance, reasons = score_signal(latest, sma20, sma60, rsi14, histogram, change20, boll, dd)
 
+    # 生成图表
+    chart_file = generate_price_chart(symbol, prices) if generate_chart else None
+
     lines = [
         f"股票代码: {symbol}",
         f"数据区间: {prices[0].date.strftime('%Y-%m-%d')} -> {prices[-1].date.strftime('%Y-%m-%d')}",
         f"最新收盘价: {latest:.2f}",
         "",
+    ]
+
+    if chart_file:
+        lines.extend([
+            f"📊 图表文件: {chart_file}",
+            "",
+        ])
+
+    lines.extend([
         "关键指标",
         f"- SMA20: {format_num(sma20)}",
         f"- SMA60: {format_num(sma60)}",
@@ -638,7 +734,7 @@ def analyze_prices(symbol: str, prices: list[PriceBar]) -> str:
         "",
         f"结论: {stance}",
         "依据:",
-    ]
+    ])
     if reasons:
         lines.extend(f"- {reason}" for reason in reasons)
     else:
@@ -684,6 +780,11 @@ def parse_args() -> argparse.Namespace:
         "--self-test",
         action="store_true",
         help="运行内置自检并退出",
+    )
+    parser.add_argument(
+        "--chart",
+        action="store_true",
+        help="生成股票价格图表并保存为PNG文件",
     )
     return parser.parse_args()
 
@@ -753,7 +854,7 @@ def main() -> int:
         print(f"错误: {exc}", file=sys.stderr)
         return 1
 
-    print(analyze_prices(symbol, prices))
+    print(analyze_prices(symbol, prices, generate_chart=args.chart))
     return 0
 
 

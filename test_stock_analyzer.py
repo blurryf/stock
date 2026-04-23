@@ -97,6 +97,39 @@ class TestIndicators(unittest.TestCase):
         self.assertEqual(stock_analyzer.format_pct(None), "N/A")
         self.assertEqual(stock_analyzer.format_num(None), "N/A")
 
+    def test_generate_demo_prices(self):
+        prices = stock_analyzer.generate_demo_prices(10)
+        self.assertEqual(len(prices), 10)
+        self.assertGreater(prices[0].close, 0)
+        self.assertGreater(prices[-1].close, 0)
+
+    def test_annualized_return_and_sharpe(self):
+        values = [100.0, 101.0, 102.0]
+        self.assertIsNone(stock_analyzer.annualized_return([100.0]))
+        ar = stock_analyzer.annualized_return(values)
+        self.assertIsNotNone(ar)
+        self.assertGreater(ar, 0)
+        sharpe = stock_analyzer.sharpe_like(values)
+        self.assertIsNotNone(sharpe)
+
+    def test_max_drawdown(self):
+        self.assertIsNone(stock_analyzer.max_drawdown([100.0]))
+        dd = stock_analyzer.max_drawdown([100.0, 90.0, 95.0])
+        self.assertAlmostEqual(dd, -0.1)
+
+    def test_bollinger_bands(self):
+        self.assertIsNone(stock_analyzer.bollinger_bands([1.0, 2.0], 20))
+        bands = stock_analyzer.bollinger_bands([100.0] * 25, 20)
+        self.assertIsNotNone(bands)
+        lower, mid, upper = bands
+        self.assertEqual(lower, mid)  # For constant values, std=0
+        self.assertEqual(upper, mid)
+
+    def test_linear_regression_slope(self):
+        self.assertIsNone(stock_analyzer.linear_regression_slope([1.0, 2.0], 3))
+        slope = stock_analyzer.linear_regression_slope([1.0, 2.0, 3.0, 4.0, 5.0], 5)
+        self.assertAlmostEqual(slope, 1.0)
+
     def test_score_signal_branches(self):
         stance, _ = stock_analyzer.score_signal(
             latest=110.0,
@@ -105,6 +138,8 @@ class TestIndicators(unittest.TestCase):
             rsi=25.0,
             macd_hist=1.0,
             change20=-0.10,
+            boll=(95.0, 100.0, 105.0),
+            max_dd=-0.05,
         )
         self.assertEqual(stance, "偏多")
 
@@ -115,6 +150,8 @@ class TestIndicators(unittest.TestCase):
             rsi=80.0,
             macd_hist=-1.0,
             change20=0.10,
+            boll=(95.0, 100.0, 105.0),
+            max_dd=-0.05,
         )
         self.assertEqual(stance, "偏空")
 
@@ -125,6 +162,8 @@ class TestIndicators(unittest.TestCase):
             rsi=None,
             macd_hist=None,
             change20=None,
+            boll=None,
+            max_dd=None,
         )
         self.assertEqual(stance, "中性")
 
