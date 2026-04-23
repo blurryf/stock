@@ -434,6 +434,69 @@ def annualized_volatility(values: list[float]) -> float | None:
     return statistics.stdev(returns) * math.sqrt(252)
 
 
+def max_drawdown(values: list[float]) -> float | None:
+    if len(values) < 2:
+        return None
+    peak = values[0]
+    max_dd = 0.0
+    for value in values[1:]:
+        if value > peak:
+            peak = value
+            continue
+        dd = (value - peak) / peak
+        if dd < max_dd:
+            max_dd = dd
+    return max_dd
+
+
+def bollinger_bands(values: list[float], period: int = 20, k: float = 2.0) -> tuple[float, float, float] | None:
+    if len(values) < period:
+        return None
+    window = values[-period:]
+    mid = sum(window) / period
+    std = statistics.pstdev(window)
+    upper = mid + k * std
+    lower = mid - k * std
+    return lower, mid, upper
+
+
+def linear_regression_slope(values: list[float], period: int) -> float | None:
+    if len(values) < period:
+        return None
+    y = values[-period:]
+    n = period
+    x_mean = (n - 1) / 2
+    y_mean = sum(y) / n
+    denom = sum((i - x_mean) ** 2 for i in range(n))
+    if denom == 0:
+        return 0.0
+    numer = sum((i - x_mean) * (y[i] - y_mean) for i in range(n))
+    return numer / denom
+
+
+def annualized_return(values: list[float]) -> float | None:
+    if len(values) < 2:
+        return None
+    start = values[0]
+    end = values[-1]
+    if start <= 0:
+        return None
+    days = len(values) - 1
+    if days <= 0:
+        return None
+    years = days / 252
+    if years <= 0:
+        return None
+    return (end / start) ** (1 / years) - 1
+
+
+def sharpe_like(values: list[float]) -> float | None:
+    ar = annualized_return(values)
+    vol = annualized_volatility(values)
+    if ar is None or vol is None or vol == 0:
+        return None
+    return ar / vol
+
 def percent_change(values: list[float], period: int) -> float | None:
     if len(values) <= period:
         return None
@@ -447,6 +510,8 @@ def score_signal(
     rsi: float | None,
     macd_hist: float | None,
     change20: float | None,
+    boll: tuple[float, float, float] | None,
+    max_dd: float | None,
 ) -> tuple[str, list[str]]:
     score = 0
     reasons: list[str] = []
@@ -486,6 +551,23 @@ def score_signal(
         score += 1
         reasons.append("近 20 日回撤较大，需观察企稳迹象")
 
+    if boll is not None:
+        lower, mid, upper = boll
+        if latest > upper:
+            score -= 1
+            reasons.append("价格突破布林上轨，短期可能过热")
+        elif latest < lower:
+            score += 1
+            reasons.append("价格跌破布林下轨，可能超跌")
+        else:
+            bandwidth = (upper - lower) / mid if mid else None
+            if bandwidth is not None and bandwidth < 0.06:
+                reasons.append("布林带较窄，波动收敛，留意方向选择")
+
+    if max_dd is not None and max_dd < -0.25:
+        score -= 1
+        reasons.append("区间最大回撤较大，风险偏高")
+
     if score >= 3:
         return "偏多", reasons
     if score <= -2:
@@ -518,8 +600,15 @@ def analyze_prices(symbol: str, prices: list[PriceBar]) -> str:
     macd, signal, histogram = compute_macd(closes)
     change5 = percent_change(closes, 5)
     change20 = percent_change(closes, 20)
+    change60 = percent_change(closes, 60)
     volatility = annualized_volatility(closes)
-    stance, reasons = score_signal(latest, sma20, sma60, rsi14, histogram, change20)
+    dd = max_drawdown(closes)
+    boll = bollinger_bands(closes, 20, 2.0)
+    ar = annualized_return(closes)
+    sharpe = sharpe_like(closes)
+    slope20 = linear_regression_slope(closes, 20)
+    slope60 = linear_regression_slope(closes, 60)
+    stance, reasons = score_signal(latest, sma20, sma60, rsi14, histogram, change20, boll, dd)
 
     lines = [
         f"股票代码: {symbol}",
@@ -537,6 +626,15 @@ def analyze_prices(symbol: str, prices: list[PriceBar]) -> str:
         f"- 5日涨跌幅: {format_pct(change5)}",
         f"- 20日涨跌幅: {format_pct(change20)}",
         f"- 年化波动率: {format_pct(volatility)}",
+        f"- 60日涨跌幅: {format_pct(change60)}",
+        f"- 最大回撤: {format_pct(dd)}",
+        f"- 年化收益(估算): {format_pct(ar)}",
+        f"- 风险收益比(近似夏普): {format_num(sharpe)}",
+        "",
+        "趋势强度",
+        f"- 20日斜率(价格/天): {format_num(slope20)}",
+        f"- 60日斜率(价格/天): {format_num(slope60)}",
+        (f"- 布林带: L {boll[0]:.2f} / M {boll[1]:.2f} / U {boll[2]:.2f}" if boll is not None else "- 布林带: N/A"),
         "",
         f"结论: {stance}",
         "依据:",
