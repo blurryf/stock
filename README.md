@@ -15,15 +15,28 @@
 ## 快速开始
 
 ```bash
-python3 stock_analyzer.py aapl.us
+./stock aapl.us
 ```
 
 不带股票代码默认走在线模式，会提示参数错误。
 
+你也可以直接输入中文名称（会自动解析成代码）：
+
+```bash
+./stock 中际旭创
+./stock 英维克
+```
+
+不带参数会进入交互模式，按提示输入即可：
+
+```bash
+./stock
+```
+
 如果当前环境无法访问网络，可以使用：
 
 ```bash
-python3 stock_analyzer.py --source demo
+./stock --source demo
 ```
 
 在线模式默认优先尝试 `stooq`。如果 `stooq` 返回空数据、验证码页或不可用，程序会自动回退到 Yahoo Finance 的公开行情接口继续获取数据。
@@ -31,7 +44,19 @@ python3 stock_analyzer.py --source demo
 如果你想先确认本地环境是否正常，可以运行内置自检：
 
 ```bash
-python3 stock_analyzer.py --self-test
+./stock --self-test
+```
+
+如果在线请求卡住，可以缩短超时：
+
+```bash
+./stock 601318.cn --timeout 5
+```
+
+或者直接指定走 Yahoo：
+
+```bash
+./stock 601318.cn --source yahoo
 ```
 
 ## 示例输出
