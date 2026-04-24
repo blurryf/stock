@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-
 import argparse
 import csv
 import json
@@ -605,6 +604,10 @@ def generate_price_chart(symbol: str, prices: list[PriceBar], output_dir: str = 
         return None
 
     try:
+        # 设置中文字体
+        plt.rcParams['font.sans-serif'] = ['Songti SC', 'STHeiti', 'PingFang SC', 'Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+
         # 准备数据
         dates = [item.date for item in prices]
         closes = [item.close for item in prices]
@@ -671,7 +674,7 @@ def generate_price_chart(symbol: str, prices: list[PriceBar], output_dir: str = 
         return None
 
 
-def analyze_prices(symbol: str, prices: list[PriceBar], generate_chart: bool = False) -> str:
+def analyze_prices(symbol: str, prices: list[PriceBar], generate_chart: bool = False, chart_name: str | None = None) -> str:
     if not prices:
         raise ValueError("没有可分析的价格数据")
 
@@ -695,7 +698,7 @@ def analyze_prices(symbol: str, prices: list[PriceBar], generate_chart: bool = F
     stance, reasons = score_signal(latest, sma20, sma60, rsi14, histogram, change20, boll, dd)
 
     # 生成图表
-    chart_file = generate_price_chart(symbol, prices) if generate_chart else None
+    chart_file = generate_price_chart(chart_name or symbol, prices) if generate_chart else None
 
     lines = [
         f"股票代码: {symbol}",
@@ -813,11 +816,20 @@ def main() -> int:
         if sys.stdin.isatty():
             try:
                 query = input("请输入股票代码或名称(回车=demo): ").strip()
+                if query:
+                    # 在交互模式下询问是否生成图表
+                    chart_input = input("是否生成图表? (y/N): ").strip().lower()
+                    if chart_input in ('y', 'yes', '是', '生成'):
+                        args.chart = True
             except (EOFError, KeyboardInterrupt):
                 print("", file=sys.stderr)
                 return 1
             if not query:
                 args.source = "demo"
+                # 在demo模式下也询问是否生成图表
+                chart_input = input("是否生成图表? (y/N): ").strip().lower()
+                if chart_input in ('y', 'yes', '是', '生成'):
+                    args.chart = True
         else:
             print("错误: 在线模式必须提供股票代码", file=sys.stderr)
             return 1
@@ -854,7 +866,7 @@ def main() -> int:
         print(f"错误: {exc}", file=sys.stderr)
         return 1
 
-    print(analyze_prices(symbol, prices, generate_chart=args.chart))
+    print(analyze_prices(symbol, prices, generate_chart=args.chart, chart_name=query))
     return 0
 
 
